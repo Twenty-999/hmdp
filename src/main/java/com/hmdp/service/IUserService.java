@@ -20,13 +20,13 @@ public interface IUserService extends IService<User> {
     /**
      * 发送验证码
      */
-    Result sendCode(String phone, HttpSession seesion);
+    Result sendCode(String phone);
 
     /**
-     * 登录功能
-     * @param loginForm 登录参数，包含手机号、验证码；或者手机号、密码
-     * @param session 当前 HTTP 会话，用于读取验证码和保存登录用户
-     * @return 登录成功或校验失败的结果
+     * 使用手机号和验证码登录。
+     *
+     * @param loginForm 登录表单，包含手机号和验证码
+     * @return 登录成功时返回 Token，否则返回错误信息
      */
-    Result login(LoginFormDTO loginForm, HttpSession session);
+    Result login(LoginFormDTO loginForm);
 }
