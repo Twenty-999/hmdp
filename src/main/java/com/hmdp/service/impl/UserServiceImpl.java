@@ -10,9 +10,16 @@ import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
+
+import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_KEY;
+import static com.hmdp.utils.RedisConstants.LOGIN_CODE_TTL;
 
 /**
  * <p>
@@ -26,32 +33,40 @@ import javax.servlet.http.HttpSession;
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
     /**
-     * 发送手机验证码
+     * 生成手机验证码并保存到 Redis，通过日志模拟短信发送。
      *
-     * @param phone
-     * @param session
-     * @return
+     * @param phone 接收验证码的手机号
+     * @param session 当前会话，本阶段保留参数，方法内暂未使用
+     * @return 处理成功或手机号格式错误的结果
      */
+    @Override
     public Result sendCode(String phone, HttpSession session) {
-        if (RegexUtils.isPhoneInvalid((phone))) {
+        // 1. 校验手机号
+        if (RegexUtils.isPhoneInvalid(phone)) {
             return Result.fail("手机号格式错误！");
         }
 
+        // 2. 生成六位数字验证码
         String code = RandomUtil.randomNumbers(6);
 
-        session.setAttribute("code", code);
+        // 3. 按手机号保存验证码，并设置两分钟有效期
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phone, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
 
+        // 4. 用日志模拟发送短信
         log.debug("发送短信验证码成功，验证码：{}", code);
 
         return Result.ok();
     }
 
     /**
-     * 使用验证码完成登录，并将用户信息保存到 Session。
+     * 校验 Redis 中的验证码，完成登录并将用户保存到 Session。
      *
-     * @param loginForm 登录参数，包含手机号、验证码；或者手机号、密码
-     * @param session 当前 HTTP 会话，用于读取验证码和保存登录用户
+     * @param loginForm 登录表单，包含手机号和验证码
+     * @param session 当前 HTTP 会话，用于保存登录用户
      * @return 登录成功或校验失败的结果
      */
     @Override
@@ -61,10 +76,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.fail("手机号格式错误！");
         }
 
-        Object cacheCode = session.getAttribute("code");
+        // 根据手机号读取 Redis 中的验证码
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone);
+
         String code = loginForm.getCode();
-        if (cacheCode == null || !cacheCode.toString().equals(code)) {
-            return Result.fail("验证码错误！");
+        if (cacheCode == null || !cacheCode.equals(code)) {
+            return Result.fail("验证码错误或已过期！");
         }
 
         User user = query().eq("phone", phone).one();
