@@ -27,14 +27,14 @@ public class ShopController {
     public IShopService shopService;
 
     /**
-     * 根据商户 ID 获取详情。
+     * 根据商户 ID 获取详情，允许在后台刷新期间返回旧数据。
      *
      * @param id 商户 ID
-     * @return 商户详情或商户不存在的提示
+     * @return 商户详情或查询失败结果
      */
     @GetMapping("/{id}")
     public Result queryShopById(@PathVariable("id") Long id) {
-        return shopService.queryById(id);
+        return shopService.queryWithLogicalExpire(id);
     }
 
     /**
