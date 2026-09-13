@@ -22,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static com.hmdp.utils.RedisConstants.*;
 
@@ -84,84 +85,35 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     }
 
     /**
-     * 优先查询缓存，未命中时使用互斥锁控制缓存重建。
-     * <p>
-     * 未获取锁的请求短暂等待后重试，重试次数耗尽则返回繁忙提示。
+     * 查询商户详情，通过缓存工具控制缓存重建。
      *
      * @param id 商户 ID
-     * @return 商户详情、商户不存在或系统繁忙的结果
+     * @return 商户详情、商户不存在或请求失败的结果
      */
     @Override
     public Result queryById(Long id) {
-        String key = CACHE_SHOP_KEY + id;
-        String lockKey = LOCK_SHOP_KEY + id;
+        try {
+            Shop shop = cacheClient.queryWithMutex(
+                    CACHE_SHOP_KEY,
+                    LOCK_SHOP_KEY,
+                    id,
+                    Shop.class,
+                    this::getById,
+                    CACHE_SHOP_TTL + RandomUtil.randomInt(0, 5),
+                    TimeUnit.MINUTES
+            );
 
-        // 最多尝试 20 轮，避免请求无限等待
-        for (int attempt = 0; attempt < 20; attempt++) {
-            String shopJson = stringRedisTemplate.opsForValue().get(key);
-
-            if (StrUtil.isNotBlank(shopJson)) {
-                return Result.ok(JSONUtil.toBean(shopJson, Shop.class));
-            }
-
-            if (shopJson != null) {
+            if (shop == null) {
                 return Result.fail("商户不存在！");
             }
 
-            // 每次获取锁使用独立标识，供释放锁时核对
-            String owner = UUID.randomUUID().toString();
-
-            if (!tryLock(lockKey, owner)) {
-                if (attempt == 19) {
-                    break;
-                }
-
-                // 没拿到锁，等待其他请求重建，然后重新查缓存
-                try {
-                    Thread.sleep(50);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return Result.fail("请求已中断，请重试！");
-                }
-
-                continue;
-            }
-
-            try {
-                // 拿锁后再次检查，其他请求可能已经完成缓存重建
-                shopJson = stringRedisTemplate.opsForValue().get(key);
-
-                if (StrUtil.isNotBlank(shopJson)) {
-                    return Result.ok(JSONUtil.toBean(shopJson, Shop.class));
-                }
-
-                if (shopJson != null) {
-                    return Result.fail("商户不存在！");
-                }
-
-                Shop shop = getById(id);
-
-                if (shop == null) {
-                    stringRedisTemplate.opsForValue().set(
-                            key,
-                            "",
-                            CACHE_NULL_TTL,
-                            TimeUnit.MINUTES
-                    );
-                    return Result.fail("商户不存在！");
-                }
-
-                long ttl = CACHE_SHOP_TTL + RandomUtil.randomInt(0, 5);
-                cacheClient.set(key, shop, ttl, TimeUnit.MINUTES);
-
-                return Result.ok(shop);
-            } finally {
-                // 正常返回或发生异常，都尝试释放自己的锁
-                unlock(lockKey, owner);
-            }
+            return Result.ok(shop);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Result.fail("请求已中断，请重试！");
+        } catch (TimeoutException e) {
+            return Result.fail("系统繁忙，请稍后重试！");
         }
-
-        return Result.fail("系统繁忙，请稍后重试！");
     }
 
     /**
