@@ -10,8 +10,11 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
@@ -30,16 +33,16 @@ public class VoucherOrderServiceImpl
     @Resource
     private RedisIdWorker redisIdWorker;
 
+    @Resource
+    private PlatformTransactionManager transactionManager;
+
     /**
-     * 校验活动时间，扣减库存并创建当前用户的订单。
+     * 执行秒杀下单，由调用方提供用户锁和数据库事务。
      *
      * @param voucherId 秒杀优惠券 ID
-     * @return 下单成功时返回订单 ID，否则返回失败原因
-     * @throws IllegalStateException 订单保存失败时抛出，触发事务回滚
+     * @return 下单结果
      */
-    @Override
-    @Transactional
-    public Result seckillVoucher(Long voucherId) {
+    private Result createVoucherOrder(Long voucherId) {
         // 1. 获取当前登录用户
         UserDTO user = UserHolder.getUser();
         if (user == null) {
@@ -106,5 +109,44 @@ public class VoucherOrderServiceImpl
         }
 
         return Result.ok(orderId);
+    }
+
+    /**
+     * 在单个后端实例内，按用户串行执行秒杀下单。
+     *
+     * @param voucherId 秒杀优惠券 ID
+     * @return 下单结果
+     */
+    @Override
+    public Result seckillVoucher(Long voucherId) {
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            return Result.fail("请先登录！");
+        }
+
+        String lockKey = ("order:user:" + user.getId()).intern();
+
+        synchronized (lockKey) {
+            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+
+            try {
+                return transactionTemplate.execute(
+                        status -> createVoucherOrder(voucherId)
+                );
+            } catch (DuplicateKeyException e) {
+                // 此时事务已回滚，再确认是否是当前用户的重复订单
+                int count = query()
+                        .eq("user_id", user.getId())
+                        .eq("voucher_id", voucherId)
+                        .count();
+
+                if (count > 0) {
+                    return Result.fail("不能重复购买！");
+                }
+
+                // 也可能是订单主键等其他唯一键冲突，不能一概说成重复购买
+                throw e;
+            }
+        }
     }
 }
