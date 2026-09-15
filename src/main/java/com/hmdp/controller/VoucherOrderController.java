@@ -1,25 +1,29 @@
 package com.hmdp.controller;
 
-
 import com.hmdp.dto.Result;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import com.hmdp.service.IVoucherOrderService;
+import org.springframework.web.bind.annotation.*;
+
+import javax.annotation.Resource;
 
 /**
- * <p>
- *  前端控制器
- * </p>
- *
- * @author 虎哥
- * @since 2021-12-22
+ * 优惠券订单接口。
  */
 @RestController
 @RequestMapping("/voucher-order")
 public class VoucherOrderController {
-    @PostMapping("seckill/{id}")
+
+    @Resource
+    private IVoucherOrderService voucherOrderService;
+
+    /**
+     * 为当前登录用户提交秒杀订单。
+     *
+     * @param voucherId 秒杀优惠券 ID
+     * @return 下单结果，成功时包含订单 ID
+     */
+    @PostMapping("/seckill/{id}")
     public Result seckillVoucher(@PathVariable("id") Long voucherId) {
-        return Result.fail("功能未完成");
+        return voucherOrderService.seckillVoucher(voucherId);
     }
 }
