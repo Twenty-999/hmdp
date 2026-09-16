@@ -21,4 +21,13 @@ public interface IVoucherOrderService extends IService<VoucherOrder> {
      * @return 下单成功时返回订单 ID，否则返回失败原因
      */
     Result seckillVoucher(Long voucherId);
+
+    /**
+     * 根据消息创建订单。
+     *
+     * @param orderId 订单 ID
+     * @param userId 用户 ID
+     * @param voucherId 优惠券 ID
+     */
+    void createOrderFromMessage(Long orderId, Long userId, Long voucherId);
 }

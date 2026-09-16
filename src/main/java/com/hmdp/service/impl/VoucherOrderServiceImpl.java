@@ -16,6 +16,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.annotation.Resource;
@@ -165,6 +166,71 @@ public class VoucherOrderServiceImpl
             } catch (Exception e) {
                 log.error("释放 Redisson 订单锁失败，key：" + lockKey, e);
             }
+        }
+    }
+
+    /**
+     * 根据消息创建订单，确保同一订单重复处理时不会重复扣减库存。
+     *
+     * @param orderId 订单 ID
+     * @param userId 用户 ID
+     * @param voucherId 优惠券 ID
+     */
+    @Override
+    @Transactional
+    public void createOrderFromMessage(
+            Long orderId, Long userId, Long voucherId) {
+
+        // 1. 校验消息中的必要参数
+        if (orderId == null || userId == null || voucherId == null
+                || orderId <= 0 || userId <= 0 || voucherId <= 0) {
+            throw new IllegalArgumentException("订单消息参数不合法");
+        }
+
+        // 2. 判断这条订单消息是否已经处理成功
+        VoucherOrder existingOrder = getById(orderId);
+
+        if (existingOrder != null) {
+            // 同一个订单 ID 必须对应同一个用户和优惠券
+            if (!userId.equals(existingOrder.getUserId())
+                    || !voucherId.equals(existingOrder.getVoucherId())) {
+                throw new IllegalStateException("订单 ID 对应的信息不一致");
+            }
+
+            // 订单已经存在，本次无需再次扣库存或保存订单
+            return;
+        }
+
+        // 3. 检查是否已有同一用户购买同一张券的其他订单
+        Integer count = query()
+                .eq("user_id", userId)
+                .eq("voucher_id", voucherId)
+                .count();
+
+        if (count > 0) {
+            throw new IllegalStateException("该用户已有其他订单，需要核对");
+        }
+
+        // 4. 扣减数据库库存，库存大于 0 才允许扣减
+        boolean deducted = seckillVoucherService.update()
+                .setSql("stock = stock - 1")
+                .eq("voucher_id", voucherId)
+                .gt("stock", 0)
+                .update();
+
+        if (!deducted) {
+            throw new IllegalStateException("数据库库存扣减失败");
+        }
+
+        // 5. 使用消息里的信息保存订单
+        VoucherOrder order = new VoucherOrder();
+        order.setId(orderId);
+        order.setUserId(userId);
+        order.setVoucherId(voucherId);
+        order.setStatus(1);
+
+        if (!save(order)) {
+            throw new IllegalStateException("订单保存失败");
         }
     }
 }
