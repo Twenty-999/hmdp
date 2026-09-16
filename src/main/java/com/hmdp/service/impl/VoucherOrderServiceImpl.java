@@ -9,7 +9,9 @@ import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -18,10 +20,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 /**
  * 秒杀订单业务，负责活动校验、库存扣减和订单保存。
  */
+@Slf4j
 @Service
 public class VoucherOrderServiceImpl
         extends ServiceImpl<VoucherOrderMapper, VoucherOrder>
@@ -35,6 +39,9 @@ public class VoucherOrderServiceImpl
 
     @Resource
     private PlatformTransactionManager transactionManager;
+
+    @Resource
+    private SimpleRedisLock simpleRedisLock;
 
     /**
      * 执行秒杀下单，由调用方提供用户锁和数据库事务。
@@ -112,10 +119,10 @@ public class VoucherOrderServiceImpl
     }
 
     /**
-     * 在单个后端实例内，按用户串行执行秒杀下单。
+     * 使用 Redis 用户锁协调秒杀下单，在事务结束后释放锁。
      *
      * @param voucherId 秒杀优惠券 ID
-     * @return 下单结果
+     * @return 下单结果或请求处理中提示
      */
     @Override
     public Result seckillVoucher(Long voucherId) {
@@ -124,28 +131,40 @@ public class VoucherOrderServiceImpl
             return Result.fail("请先登录！");
         }
 
-        String lockKey = ("order:user:" + user.getId()).intern();
+        String lockKey = "lock:order:user:" + user.getId();
+        String owner = UUID.randomUUID().toString();
 
-        synchronized (lockKey) {
-            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
+        // 获取失败直接返回，不进入数据库事务
+        boolean locked = simpleRedisLock.tryLock(lockKey, owner, 10);
+        if (!locked) {
+            return Result.fail("请求正在处理中，请稍后重试！");
+        }
 
+        try {
+            TransactionTemplate transactionTemplate =
+                    new TransactionTemplate(transactionManager);
+
+            return transactionTemplate.execute(
+                    status -> createVoucherOrder(voucherId)
+            );
+        } catch (DuplicateKeyException e) {
+            // 数据库事务已回滚，再确认是否是重复购买
+            int count = query()
+                    .eq("user_id", user.getId())
+                    .eq("voucher_id", voucherId)
+                    .count();
+
+            if (count > 0) {
+                return Result.fail("不能重复购买！");
+            }
+
+            throw e;
+        } finally {
             try {
-                return transactionTemplate.execute(
-                        status -> createVoucherOrder(voucherId)
-                );
-            } catch (DuplicateKeyException e) {
-                // 此时事务已回滚，再确认是否是当前用户的重复订单
-                int count = query()
-                        .eq("user_id", user.getId())
-                        .eq("voucher_id", voucherId)
-                        .count();
-
-                if (count > 0) {
-                    return Result.fail("不能重复购买！");
-                }
-
-                // 也可能是订单主键等其他唯一键冲突，不能一概说成重复购买
-                throw e;
+                simpleRedisLock.unlock(lockKey, owner);
+            } catch (Exception e) {
+                // 解锁异常不能覆盖已经完成的下单结果，锁还有过期时间
+                log.error("释放订单锁失败，key：" + lockKey, e);
             }
         }
     }
