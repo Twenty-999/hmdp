@@ -13,7 +13,10 @@ import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +24,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Arrays;
+
+import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_KEY;
 
 /**
  * 秒杀订单业务，负责活动校验、库存扣减和订单保存。
@@ -42,6 +49,18 @@ public class VoucherOrderServiceImpl
 
     @Resource
     private RedissonClient redissonClient;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    // 保存脚本配置，供每次抢购请求复用
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
+    static {
+        SECKILL_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("seckill.lua"));
+        SECKILL_SCRIPT.setResultType(Long.class);
+    }
 
     /**
      * 执行秒杀下单，由调用方提供用户锁和数据库事务。
@@ -119,54 +138,91 @@ public class VoucherOrderServiceImpl
     }
 
     /**
-     * 使用 Redisson 用户锁协调下单，在数据库事务结束后释放锁。
+     * 申请秒杀资格，预扣 Redis 库存并写入订单消息。
      *
      * @param voucherId 秒杀优惠券 ID
-     * @return 下单结果或请求处理中提示
+     * @return 受理成功时返回订单 ID，否则返回失败提示
      */
     @Override
     public Result seckillVoucher(Long voucherId) {
+        // 1. 获取当前登录用户
         UserDTO user = UserHolder.getUser();
         if (user == null) {
             return Result.fail("请先登录！");
         }
 
-        // 使用独立前缀，避免与手写锁的数据格式冲突
-        String lockKey = "lock:order:redisson:user:" + user.getId();
-        RLock lock = redissonClient.getLock(lockKey);
-
-        // 立即尝试获取锁，不指定固定租期，使用看门狗续期
-        boolean locked = lock.tryLock();
-        if (!locked) {
-            return Result.fail("请求正在处理中，请稍后重试！");
+        if (voucherId == null || voucherId <= 0) {
+            return Result.fail("优惠券 ID 不合法！");
         }
 
-        try {
-            TransactionTemplate transactionTemplate = new TransactionTemplate(transactionManager);
-
-            return transactionTemplate.execute(
-                    status -> createVoucherOrder(voucherId)
-            );
-        } catch (DuplicateKeyException e) {
-            // 事务已回滚，再判断是否为重复购买
-            int count = query()
-                    .eq("user_id", user.getId())
-                    .eq("voucher_id", voucherId)
-                    .count();
-
-            if (count > 0) {
-                return Result.fail("不能重复购买！");
-            }
-
-            throw e;
-        } finally {
-            try {
-                // Redisson 会检查当前线程是否为锁持有者
-                lock.unlock();
-            } catch (Exception e) {
-                log.error("释放 Redisson 订单锁失败，key：" + lockKey, e);
-            }
+        // 2. 查询活动信息
+        SeckillVoucher voucher = seckillVoucherService.getById(voucherId);
+        if (voucher == null) {
+            return Result.fail("秒杀优惠券不存在！");
         }
+
+        if (voucher.getBeginTime() == null
+                || voucher.getEndTime() == null
+                || !voucher.getBeginTime().isBefore(voucher.getEndTime())) {
+            return Result.fail("活动时间配置有误！");
+        }
+
+        // 3. 将数据库中的北京时间转换为秒级时间戳
+        ZoneId activityZone = ZoneId.of("Asia/Shanghai");
+
+        long beginTime = voucher.getBeginTime()
+                .atZone(activityZone)
+                .toEpochSecond();
+
+        long endTime = voucher.getEndTime()
+                .atZone(activityZone)
+                .toEpochSecond();
+
+        // 4. 提前生成订单 ID，后续消息和数据库使用同一个 ID
+        long orderId = redisIdWorker.nextId("order");
+
+        // 5. 执行 Lua：校验资格、预扣库存、写入订单消息
+        Long result = stringRedisTemplate.execute(
+                SECKILL_SCRIPT,
+                Arrays.asList(
+                        SECKILL_STOCK_KEY + voucherId,
+                        "seckill:buyers:" + voucherId,
+                        "stream.orders"
+                ),
+                user.getId().toString(),
+                voucherId.toString(),
+                String.valueOf(orderId),
+                String.valueOf(beginTime),
+                String.valueOf(endTime)
+        );
+
+        if (result == null) {
+            throw new IllegalStateException("秒杀脚本未返回结果");
+        }
+
+        // 6. 根据脚本结果返回提示
+        if (result == 0L) {
+            // 仅表示已受理，数据库订单由消费者异步创建
+            return Result.ok(orderId);
+        }
+
+        if (result == 1L) {
+            return Result.fail("库存不足！");
+        }
+        if (result == 2L) {
+            return Result.fail("不能重复购买！");
+        }
+        if (result == 3L) {
+            return Result.fail("活动库存尚未准备好！");
+        }
+        if (result == 4L) {
+            return Result.fail("秒杀尚未开始！");
+        }
+        if (result == 5L) {
+            return Result.fail("秒杀已经结束！");
+        }
+
+        throw new IllegalStateException("未知秒杀结果码：" + result);
     }
 
     /**

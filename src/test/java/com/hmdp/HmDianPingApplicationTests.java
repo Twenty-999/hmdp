@@ -1,6 +1,8 @@
 package com.hmdp;
 
+import com.hmdp.entity.Voucher;
 import com.hmdp.service.IShopService;
+import com.hmdp.service.IVoucherService;
 import com.hmdp.utils.RedisIdWorker;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -18,6 +20,7 @@ import org.springframework.data.redis.connection.stream.StreamReadOptions;
 
 import javax.annotation.Resource;
 
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.time.Duration;
@@ -36,6 +39,8 @@ class HmDianPingApplicationTests {
     private RedissonClient redissonClient;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private IVoucherService voucherService;
 
     /**
      * 手动预热商户 1，设置 20 秒的逻辑有效期。
@@ -238,5 +243,36 @@ class HmDianPingApplicationTests {
                 .acknowledge(streamKey, group, record.getId());
 
         assertEquals(Long.valueOf(1L), acknowledged);
+    }
+
+    /**
+     * 创建一张用于异步下单练习的秒杀券。
+     * 每次执行都会新增数据，仅需手动执行一次。
+     */
+    @Test
+    @Disabled("会新增真实数据库记录，手动创建时临时移除此注解")
+    void createAsyncLearningVoucher() {
+        LocalDateTime now = LocalDateTime.now();
+
+        Voucher voucher = new Voucher();
+        voucher.setShopId(1L);
+        voucher.setTitle("异步下单练习券");
+        voucher.setSubTitle("库存 2 张，每人限购一张");
+        voucher.setRules("仅用于本地学习");
+        voucher.setPayValue(8000L);
+        voucher.setActualValue(10000L);
+        voucher.setType(1);
+        voucher.setStatus(1);
+
+        voucher.setStock(2);
+
+        // 先安排在一小时后开始，给后续接线和库存初始化留出时间
+        voucher.setBeginTime(now.plusHours(1));
+        voucher.setEndTime(now.plusDays(1));
+
+        voucherService.addSeckillVoucher(voucher);
+
+        assertNotNull(voucher.getId());
+        System.out.println("新秒杀券 ID：" + voucher.getId());
     }
 }
