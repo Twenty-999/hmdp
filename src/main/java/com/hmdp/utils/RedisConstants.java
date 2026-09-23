@@ -18,6 +18,8 @@ public class RedisConstants {
 
     public static final String SECKILL_STOCK_KEY = "seckill:stock:";
     public static final String BLOG_LIKED_KEY = "blog:liked:";
+    // 按点赞时间排序的用户集合
+    public static final String BLOG_LIKED_TIME_KEY = "blog:liked:time:";
     public static final String FEED_KEY = "feed:";
     public static final String SHOP_GEO_KEY = "shop:geo:";
     public static final String USER_SIGN_KEY = "sign:";
