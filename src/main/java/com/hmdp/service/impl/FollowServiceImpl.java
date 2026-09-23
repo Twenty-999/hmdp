@@ -9,6 +9,7 @@ import com.hmdp.service.IFollowService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.UserHolder;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -30,6 +31,7 @@ import static com.hmdp.utils.RedisConstants.*;
  * @author 虎哥
  * @since 2021-12-22
  */
+@Slf4j
 @Service
 public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> implements IFollowService {
 
@@ -109,7 +111,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
                     .eq("follow_user_id", followUserId));
 
             // 即使原本没有关系，也已经达到“未关注”状态
-            return Result.ok();
+            return finishFollowChange(userId);
         }
 
         // 3. 关注前，检查目标用户存在
@@ -124,7 +126,7 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
                 .count();
 
         if (count > 0) {
-            return Result.ok();
+            return finishFollowChange(userId);
         }
 
         // 5. 保存新的关注关系
@@ -145,14 +147,14 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
             if (existingCount > 0) {
                 // 已达到“关注”状态，本次请求也可以视为成功
-                return Result.ok();
+                return finishFollowChange(userId);
             }
 
             // 未查到对应关系，不能把所有唯一键冲突都当成成功
             throw e;
         }
 
-        return Result.ok();
+        return finishFollowChange(userId);
     }
 
     /**
@@ -192,5 +194,27 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         if (!Long.valueOf(1L).equals(result)) {
             throw new IllegalStateException("关注缓存加载失败");
         }
+    }
+
+    /**
+     * 在关注操作完成后使缓存失效，并返回成功结果。
+     *
+     * @param userId 发起关注的用户 ID
+     * @return 操作成功结果
+     */
+    private Result finishFollowChange(Long userId) {
+        try {
+            // 一次删除关注集合及其已加载标记
+            stringRedisTemplate.delete(Arrays.asList(
+                    FOLLOW_SET_KEY + userId,
+                    FOLLOW_READY_KEY + userId
+            ));
+        } catch (Exception e) {
+            // 数据库操作已经完成，记录缓存失效失败
+            log.error("关注操作已完成，但缓存失效失败，用户 ID："
+                    + userId, e);
+        }
+
+        return Result.ok();
     }
 }
