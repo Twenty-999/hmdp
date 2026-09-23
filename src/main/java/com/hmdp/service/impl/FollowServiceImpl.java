@@ -9,6 +9,7 @@ import com.hmdp.service.IFollowService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.UserHolder;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
@@ -110,8 +111,24 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         relation.setUserId(userId);
         relation.setFollowUserId(followUserId);
 
-        if (!save(relation)) {
-            return Result.fail("关注失败！");
+        try {
+            if (!save(relation)) {
+                return Result.fail("关注失败！");
+            }
+        } catch (DuplicateKeyException e) {
+            // 可能有另一个请求刚刚成功创建了同一条关注关系
+            int existingCount = query()
+                    .eq("user_id", userId)
+                    .eq("follow_user_id", followUserId)
+                    .count();
+
+            if (existingCount > 0) {
+                // 已达到“关注”状态，本次请求也可以视为成功
+                return Result.ok();
+            }
+
+            // 未查到对应关系，不能把所有唯一键冲突都当成成功
+            throw e;
         }
 
         return Result.ok();
