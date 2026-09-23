@@ -16,8 +16,9 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 
-import java.util.List;
+import java.util.*;
 
+import static cn.hutool.core.util.DesensitizedUtil.userId;
 import static com.hmdp.utils.RedisConstants.BLOG_LIKED_TIME_KEY;
 
 /**
@@ -186,5 +187,65 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         }
 
         return Result.ok(records);
+    }
+
+    /**
+     * 查询最早点赞的五位用户，并保留点赞排序。
+     *
+     * @param id 笔记 ID
+     * @return 点赞用户的公开信息列表
+     */
+    @Override
+    public Result queryBlogLikes(Long id) {
+        if (id == null || getById(id) == null) {
+            return Result.fail("笔记不存在！");
+        }
+
+        // 1. 按点赞时间从早到晚，获取最多五个用户 ID
+        String key = BLOG_LIKED_TIME_KEY + id;
+        Set<String> members = stringRedisTemplate.opsForZSet()
+                .range(key, 0, 4);
+
+        if (members == null || members.isEmpty()) {
+            return Result.ok(Collections.emptyList());
+        }
+
+        // 2. 将字符串 ID 转换为 Long，保留返回顺序
+        List<Long> ids = new ArrayList<>();
+
+        for (String member : members) {
+            ids.add(Long.valueOf(member));
+        }
+
+        // 3. 一次查询这些用户的信息
+        List<User> users = userService.listByIds(ids);
+
+        // 数据库查询结果不保证与 ids 的顺序相同
+        Map<Long, User> userMap = new HashMap<>();
+
+        for (User user : users) {
+            userMap.put(user.getId(), user);
+        }
+
+        // 4. 按 Redis 的顺序组装公开信息
+        List<UserDTO> result = new ArrayList<>();
+
+        for (Long userId : ids) {
+            User user = userMap.get(userId());
+
+            // 用户已不存在时，跳过这条记录
+            if (user == null) {
+                continue;
+            }
+
+            UserDTO dto = new UserDTO();
+            dto.setId(user.getId());
+            dto.setNickName(user.getNickName());
+            dto.setIcon(user.getIcon());
+
+            result.add(dto);
+        }
+
+        return Result.ok(result);
     }
 }

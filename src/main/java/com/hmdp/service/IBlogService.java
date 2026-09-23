@@ -37,4 +37,12 @@ public interface IBlogService extends IService<Blog> {
      * @return 笔记列表，包含作者信息和当前用户的点赞状态
      */
     Result queryHotBlog(Integer current);
+
+    /**
+     * 查询笔记最早点赞的五位用户。
+     *
+     * @param id 笔记 ID
+     * @return 点赞用户的公开信息列表
+     */
+    Result queryBlogLikes(Long id);
 }

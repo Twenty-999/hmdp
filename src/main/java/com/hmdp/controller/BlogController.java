@@ -90,4 +90,15 @@ public class BlogController {
     public Result queryBlogById(@PathVariable("id") Long id) {
         return blogService.queryBlogById(id);
     }
+
+    /**
+     * 获取笔记最早点赞的五位用户。
+     *
+     * @param id 笔记 ID
+     * @return 点赞用户列表
+     */
+    @GetMapping("/likes/{id}")
+    public Result queryBlogLikes(@PathVariable("id") Long id) {
+        return blogService.queryBlogLikes(id);
+    }
 }
