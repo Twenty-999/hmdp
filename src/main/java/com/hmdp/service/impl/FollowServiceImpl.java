@@ -9,10 +9,18 @@ import com.hmdp.service.IFollowService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.UserHolder;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import static com.hmdp.utils.RedisConstants.*;
 
 /**
  * <p>
@@ -27,6 +35,19 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
 
     @Resource
     private IUserService userService;
+
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    private static final DefaultRedisScript<Long> LOAD_FOLLOW_CACHE_SCRIPT;
+
+    static {
+        LOAD_FOLLOW_CACHE_SCRIPT = new DefaultRedisScript<>();
+        LOAD_FOLLOW_CACHE_SCRIPT.setLocation(
+                new ClassPathResource("load-follow-cache.lua")
+        );
+        LOAD_FOLLOW_CACHE_SCRIPT.setResultType(Long.class);
+    }
 
     /**
      * 根据关注关系判断当前用户是否已关注目标用户。
@@ -132,5 +153,44 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         }
 
         return Result.ok();
+    }
+
+    /**
+     * 确保用户的关注集合已加载到 Redis。
+     *
+     * @param userId 发起关注的用户 ID
+     */
+    private void ensureFollowCache(Long userId) {
+        String setKey = FOLLOW_SET_KEY + userId;
+        String readyKey = FOLLOW_READY_KEY + userId;
+
+        // 1. 已有加载标记，直接使用缓存
+        if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(readyKey))) {
+            return;
+        }
+
+        // 2. 查询这个用户关注了哪些人
+        List<Follow> relations = query()
+                .eq("user_id", userId)
+                .list();
+
+        // 3. 组装 Lua 参数：有效期 + 被关注用户 ID
+        List<String> args = new ArrayList<>();
+        args.add(String.valueOf(FOLLOW_CACHE_TTL));
+
+        for (Follow relation : relations) {
+            args.add(relation.getFollowUserId().toString());
+        }
+
+        // 4. 写入完整集合和已加载标记
+        Long result = stringRedisTemplate.execute(
+                LOAD_FOLLOW_CACHE_SCRIPT,
+                Arrays.asList(setKey, readyKey),
+                args.toArray(new String[0])
+        );
+
+        if (!Long.valueOf(1L).equals(result)) {
+            throw new IllegalStateException("关注缓存加载失败");
+        }
     }
 }

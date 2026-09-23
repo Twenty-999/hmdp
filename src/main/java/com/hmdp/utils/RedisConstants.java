@@ -23,4 +23,11 @@ public class RedisConstants {
     public static final String FEED_KEY = "feed:";
     public static final String SHOP_GEO_KEY = "shop:geo:";
     public static final String USER_SIGN_KEY = "sign:";
+
+    // 用户关注的人，使用 Set 保存
+    public static final String FOLLOW_SET_KEY = "follows:";
+    // 关注集合已加载的标记
+    public static final String FOLLOW_READY_KEY = "follows:ready:";
+    // 关注缓存有效期，单位：秒
+    public static final long FOLLOW_CACHE_TTL = 60L;
 }
