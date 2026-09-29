@@ -53,4 +53,13 @@ public interface IBlogService extends IService<Blog> {
      * @return 发布成功后的笔记 ID
      */
     Result saveBlog(Blog blog);
+
+    /**
+     * 滚动查询当前用户的关注动态。
+     *
+     * @param maxTime 查询时间上界，单位为毫秒
+     * @param offset 当前时间边界下已读取的记录数
+     * @return 动态列表及下一次查询的游标
+     */
+    Result queryBlogOfFollow(Long maxTime, Integer offset);
 }

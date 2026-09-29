@@ -101,4 +101,20 @@ public class BlogController {
     public Result queryBlogLikes(@PathVariable("id") Long id) {
         return blogService.queryBlogLikes(id);
     }
+
+    /**
+     * 滚动查询当前用户的关注动态。
+     *
+     * @param lastId 上次返回的最小时间，首次传当前毫秒时间戳
+     * @param offset 上次返回的偏移量，首次传 0
+     * @return 动态列表及下一次查询的游标
+     */
+    @GetMapping("/of/follow")
+    public Result queryBlogOfFollow(
+            @RequestParam("lastId") Long lastId,
+            @RequestParam(value = "offset", defaultValue = "0")
+            Integer offset) {
+
+        return blogService.queryBlogOfFollow(lastId, offset);
+    }
 }

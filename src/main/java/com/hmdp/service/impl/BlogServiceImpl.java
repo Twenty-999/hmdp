@@ -2,6 +2,7 @@ package com.hmdp.service.impl;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ScrollResult;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
 import com.hmdp.entity.Follow;
@@ -15,6 +16,7 @@ import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
@@ -323,5 +325,103 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         }
 
         return Result.ok(blog.getId());
+    }
+
+    /**
+     * 按发布时间从新到旧查询关注动态。
+     *
+     * @param maxTime 查询时间上界，单位为毫秒
+     * @param offset 当前时间边界下已读取的记录数
+     * @return 动态列表及滚动游标
+     */
+    @Override
+    public Result queryBlogOfFollow(Long maxTime, Integer offset) {
+        // 1. 校验登录状态和分页参数
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            return Result.fail("请先登录！");
+        }
+
+        if (maxTime == null || maxTime < 0
+                || offset == null || offset < 0) {
+            return Result.fail("滚动分页参数不合法！");
+        }
+
+        // 2. 从当前用户的动态列表中读取最多两条记录
+        String key = FEED_KEY + user.getId();
+
+        Set<ZSetOperations.TypedTuple<String>> tuples =
+                stringRedisTemplate.opsForZSet()
+                        .reverseRangeByScoreWithScores(
+                                key, 0, maxTime, offset, 2
+                        );
+
+        ScrollResult result = new ScrollResult();
+
+        if (tuples == null || tuples.isEmpty()) {
+            result.setList(Collections.emptyList());
+            result.setMinTime(maxTime);
+            result.setOffset(offset);
+            return Result.ok(result);
+        }
+
+        // 3. 收集笔记 ID，并统计本页最小时间对应的记录数
+        List<Long> ids = new ArrayList<>();
+        long minTime = -1L;
+        int sameTimeCount = 0;
+
+        for (ZSetOperations.TypedTuple<String> tuple : tuples) {
+            String value = tuple.getValue();
+            Double score = tuple.getScore();
+
+            if (value == null || score == null) {
+                throw new IllegalStateException("动态记录缺少笔记 ID 或时间");
+            }
+
+            ids.add(Long.valueOf(value));
+            long time = score.longValue();
+
+            if (time == minTime) {
+                sameTimeCount++;
+            } else {
+                minTime = time;
+                sameTimeCount = 1;
+            }
+        }
+
+        // 4. 仍停留在原时间边界时，要加上此前已经跳过的数量
+        int nextOffset = minTime == maxTime.longValue()
+                ? offset + sameTimeCount
+                : sameTimeCount;
+
+        // 5. 批量查询笔记
+        List<Blog> blogs = listByIds(ids);
+        Map<Long, Blog> blogMap = new HashMap<>();
+
+        for (Blog blog : blogs) {
+            blogMap.put(blog.getId(), blog);
+        }
+
+        // 6. 按 Redis 返回的顺序组装笔记详情
+        List<Blog> orderedBlogs = new ArrayList<>();
+
+        for (Long id : ids) {
+            Blog blog = blogMap.get(id);
+
+            if (blog == null) {
+                continue;
+            }
+
+            fillBlogAuthor(blog);
+            fillBlogLikeStatus(blog);
+            orderedBlogs.add(blog);
+        }
+
+        // 7. 返回列表和下一次查询的游标
+        result.setList(orderedBlogs);
+        result.setMinTime(minTime);
+        result.setOffset(nextOffset);
+
+        return Result.ok(result);
     }
 }
