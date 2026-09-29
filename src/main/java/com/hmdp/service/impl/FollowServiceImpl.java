@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Follow;
+import com.hmdp.entity.User;
 import com.hmdp.mapper.FollowMapper;
 import com.hmdp.service.IFollowService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -17,9 +18,7 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
 
 import static com.hmdp.utils.RedisConstants.*;
 
@@ -216,5 +215,69 @@ public class FollowServiceImpl extends ServiceImpl<FollowMapper, Follow> impleme
         }
 
         return Result.ok();
+    }
+
+    /**
+     * 使用 Redis Set 交集查询共同关注。
+     *
+     * @param otherUserId 目标用户 ID
+     * @return 共同关注用户的公开信息
+     */
+    @Override
+    public Result followCommons(Long otherUserId) {
+        // 1. 校验当前用户
+        UserDTO currentUser = UserHolder.getUser();
+        if (currentUser == null) {
+            return Result.fail("请先登录！");
+        }
+
+        if (otherUserId == null || otherUserId <= 0) {
+            return Result.fail("目标用户 ID 不合法！");
+        }
+
+        if (userService.getById(otherUserId) == null) {
+            return Result.fail("目标用户不存在！");
+        }
+
+        Long currentUserId = currentUser.getId();
+
+        // 2. 确保双方关注列表已加载
+        ensureFollowCache(currentUserId);
+        ensureFollowCache(otherUserId);
+
+        // 3. 求双方关注集合的交集
+        Set<String> commonIds = stringRedisTemplate.opsForSet()
+                .intersect(
+                        FOLLOW_SET_KEY + currentUserId,
+                        FOLLOW_SET_KEY + otherUserId
+                );
+
+        if (commonIds == null || commonIds.isEmpty()) {
+            return Result.ok(Collections.emptyList());
+        }
+
+        // 4. 将字符串 ID 转换为 Long
+        List<Long> ids = new ArrayList<>();
+
+        for (String id : commonIds) {
+            ids.add(Long.valueOf(id));
+        }
+
+        // 5. 批量查询共同关注的用户
+        List<User> users = userService.listByIds(ids);
+
+        // 6. 只返回公开信息
+        List<UserDTO> result = new ArrayList<>();
+
+        for (User user : users) {
+            UserDTO dto = new UserDTO();
+            dto.setId(user.getId());
+            dto.setNickName(user.getNickName());
+            dto.setIcon(user.getIcon());
+
+            result.add(dto);
+        }
+
+        return Result.ok(result);
     }
 }
