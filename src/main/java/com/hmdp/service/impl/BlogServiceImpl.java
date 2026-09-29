@@ -4,13 +4,16 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
+import com.hmdp.entity.Follow;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
 import com.hmdp.service.IBlogService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.service.IFollowService;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -20,6 +23,7 @@ import java.util.*;
 
 import static cn.hutool.core.util.DesensitizedUtil.userId;
 import static com.hmdp.utils.RedisConstants.BLOG_LIKED_TIME_KEY;
+import static com.hmdp.utils.RedisConstants.FEED_KEY;
 
 /**
  * <p>
@@ -29,6 +33,7 @@ import static com.hmdp.utils.RedisConstants.BLOG_LIKED_TIME_KEY;
  * @author 虎哥
  * @since 2021-12-22
  */
+@Slf4j
 @Service
 public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IBlogService {
 
@@ -36,6 +41,8 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     private IUserService userService;
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private IFollowService followService;
 
     /**
      * 查询笔记详情，补充作者信息和点赞状态。
@@ -247,5 +254,74 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         }
 
         return Result.ok(result);
+    }
+
+    /**
+     * 保存笔记，并向当前粉丝分发动态。
+     *
+     * @param blog 待发布的笔记
+     * @return 发布成功后的笔记 ID
+     */
+    @Override
+    public Result saveBlog(Blog blog) {
+        // 1. 获取当前登录用户
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            return Result.fail("请先登录！");
+        }
+
+        if (blog == null) {
+            return Result.fail("笔记内容不能为空！");
+        }
+
+        // 2. 由服务端设置作者和初始状态
+        blog.setId(null);
+        blog.setUserId(user.getId());
+        blog.setLiked(0);
+        blog.setComments(0);
+        blog.setCreateTime(null);
+        blog.setUpdateTime(null);
+
+        // 3. 保存笔记，数据库生成的 ID 会回填到 blog
+        if (!save(blog)) {
+            return Result.fail("笔记发布失败！");
+        }
+
+        // 同一篇笔记向所有粉丝使用同一个分发时间
+        long publishTime = System.currentTimeMillis();
+        String blogId = blog.getId().toString();
+
+        // 4. 查询作者的粉丝
+        List<Follow> fans;
+
+        try {
+            fans = followService.query()
+                    .eq("follow_user_id", user.getId())
+                    .list();
+        } catch (Exception e) {
+            // 笔记已经保存，不能让用户误以为发布失败而重复提交
+            log.error("笔记已发布，但粉丝查询失败，笔记 ID："
+                    + blog.getId(), e);
+            return Result.ok(blog.getId());
+        }
+
+        // 5. 向每位粉丝的动态列表写入笔记 ID
+        for (Follow fan : fans) {
+            Long followerId = fan.getUserId();
+
+            try {
+                stringRedisTemplate.opsForZSet().add(
+                        FEED_KEY + followerId,
+                        blogId,
+                        publishTime
+                );
+            } catch (Exception e) {
+                // 单个接收者失败，不中断其余粉丝的分发
+                log.error("笔记动态分发失败，笔记 ID："
+                        + blog.getId() + "，粉丝 ID：" + followerId, e);
+            }
+        }
+
+        return Result.ok(blog.getId());
     }
 }

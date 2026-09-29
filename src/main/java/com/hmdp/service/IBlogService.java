@@ -45,4 +45,12 @@ public interface IBlogService extends IService<Blog> {
      * @return 点赞用户的公开信息列表
      */
     Result queryBlogLikes(Long id);
+
+    /**
+     * 发布笔记，并向粉丝的动态列表分发笔记 ID。
+     *
+     * @param blog 待发布的笔记
+     * @return 发布成功后的笔记 ID
+     */
+    Result saveBlog(Blog blog);
 }
