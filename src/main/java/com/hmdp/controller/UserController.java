@@ -90,4 +90,14 @@ public class UserController {
         // 返回
         return Result.ok(info);
     }
+
+    /**
+     * 当前用户签到。
+     *
+     * @return 签到结果
+     */
+    @PostMapping("/sign")
+    public Result sign() {
+        return userService.sign();
+    }
 }

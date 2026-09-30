@@ -4,11 +4,13 @@ import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
+import com.hmdp.utils.UserHolder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -16,6 +18,9 @@ import org.springframework.stereotype.Service;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -130,5 +135,34 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         }
 
         return user;
+    }
+
+    /**
+     * 按北京时间记录今日签到，同一天重复签到不会增加记录。
+     *
+     * @return 签到结果
+     */
+    @Override
+    public Result sign() {
+        // 1. 获取当前登录用户
+        UserDTO user = UserHolder.getUser();
+        if (user == null) {
+            return Result.fail("请先登录！");
+        }
+
+        // 2. 按业务时区确定今天的日期
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+
+        // 3. 按用户和月份构造签到键
+        String month = today.format(DateTimeFormatter.ofPattern("yyyyMM"));
+        String key = USER_SIGN_KEY + user.getId() + ":" + month;
+
+        // 4. 日期从 1 开始，位偏移量从 0 开始
+        int offset = today.getDayOfMonth() - 1;
+
+        // 5. 将今天对应的二进制位设置为 1
+        stringRedisTemplate.opsForValue().setBit(key, offset, true);
+
+        return Result.ok();
     }
 }

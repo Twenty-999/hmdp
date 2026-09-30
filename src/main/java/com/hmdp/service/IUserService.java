@@ -29,4 +29,11 @@ public interface IUserService extends IService<User> {
      * @return 登录成功时返回 Token，否则返回错误信息
      */
     Result login(LoginFormDTO loginForm);
+
+    /**
+     * 记录当前登录用户今天的签到状态。
+     *
+     * @return 签到结果
+     */
+    Result sign();
 }
