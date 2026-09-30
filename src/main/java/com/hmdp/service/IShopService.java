@@ -45,4 +45,15 @@ public interface IShopService extends IService<Shop> {
      * @return 商户详情或查询失败结果
      */
     Result queryWithLogicalExpire(Long id);
+
+    /**
+     * 按类型分页查询商户，有坐标时按距离排序。
+     *
+     * @param typeId 商户类型 ID
+     * @param current 页码，从 1 开始
+     * @param x 用户经度，可为空
+     * @param y 用户纬度，可为空
+     * @return 商户列表，附近查询时包含距离，单位为米
+     */
+    Result queryShopByType(Integer typeId, Integer current, Double x, Double y);
 }

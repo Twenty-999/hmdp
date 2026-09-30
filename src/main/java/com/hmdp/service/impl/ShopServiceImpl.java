@@ -3,6 +3,7 @@ package com.hmdp.service.impl;
 import cn.hutool.core.util.RandomUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONUtil;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
@@ -10,8 +11,11 @@ import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.RedisData;
+import com.hmdp.utils.SystemConstants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.task.TaskRejectedException;
+import org.springframework.data.geo.*;
+import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -19,8 +23,7 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
-import java.util.Collections;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -269,5 +272,113 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
                 }
             }
         }
+    }
+
+    /**
+     * 按商户类型分页查询，有坐标时查询附近 5 公里内的商户。
+     *
+     * @param typeId 商户类型 ID
+     * @param current 页码
+     * @param x 用户经度
+     * @param y 用户纬度
+     * @return 商户列表，距离单位为米
+     */
+    @Override
+    public Result queryShopByType(
+            Integer typeId, Integer current, Double x, Double y) {
+
+        if (typeId == null || typeId <= 0
+                || current == null || current < 1) {
+            return Result.fail("商户类型或页码不合法！");
+        }
+
+        int pageSize = SystemConstants.DEFAULT_PAGE_SIZE;
+
+        // 1. 没有坐标，使用普通数据库分页
+        if (x == null && y == null) {
+            Page<Shop> page = query()
+                    .eq("type_id", typeId)
+                    .orderByAsc("id")
+                    .page(new Page<>(current, pageSize));
+
+            return Result.ok(page.getRecords());
+        }
+
+        // 2. 坐标必须成对提供，并处于合法范围
+        if (x == null || y == null
+                || !Double.isFinite(x) || !Double.isFinite(y)
+                || x < -180 || x > 180
+                || y < -85.05112878 || y > 85.05112878) {
+            return Result.fail("请提供有效的经度和纬度！");
+        }
+
+        long from = (long) (current - 1) * pageSize;
+        long end = (long) current * pageSize;
+
+        // 3. 查询最近的前 end 个商户，并返回距离
+        GeoResults<RedisGeoCommands.GeoLocation<String>> results =
+                stringRedisTemplate.opsForGeo().radius(
+                        SHOP_GEO_KEY + typeId,
+                        new Circle(
+                                new Point(x, y),
+                                new Distance(5, Metrics.KILOMETERS)
+                        ),
+                        RedisGeoCommands.GeoRadiusCommandArgs.newGeoRadiusArgs()
+                                .includeDistance()
+                                .sortAscending()
+                                .limit(end)
+                );
+
+        if (results == null) {
+            return Result.ok(Collections.emptyList());
+        }
+
+        List<GeoResult<RedisGeoCommands.GeoLocation<String>>> locations =
+                results.getContent();
+
+        if (locations.size() <= from) {
+            return Result.ok(Collections.emptyList());
+        }
+
+        // 4. 截取本页的商户 ID，并记录距离
+        List<Long> ids = new ArrayList<>();
+        Map<Long, Double> distanceMap = new HashMap<>();
+
+        for (int i = (int) from; i < locations.size(); i++) {
+            GeoResult<RedisGeoCommands.GeoLocation<String>> location =
+                    locations.get(i);
+
+            Long shopId = Long.valueOf(location.getContent().getName());
+            ids.add(shopId);
+
+            // 本次查询使用公里，返回给前端时转换为米
+            distanceMap.put(shopId, location.getDistance().getValue() * 1000);
+        }
+
+        // 5. 批量查询商户详情
+        List<Shop> shops = listByIds(ids);
+        Map<Long, Shop> shopMap = new HashMap<>();
+
+        for (Shop shop : shops) {
+            shopMap.put(shop.getId(), shop);
+        }
+
+        // 6. 保留 Redis 返回的距离顺序
+        List<Shop> orderedShops = new ArrayList<>();
+
+        for (Long id : ids) {
+            Shop shop = shopMap.get(id);
+
+            // 跳过已删除或已经变更类型的商户
+            if (shop == null
+                    || !Long.valueOf(typeId.longValue()).equals(shop.getTypeId())) {
+                continue;
+            }
+
+            shop.setDistance(distanceMap.get(id));
+            orderedShops.add(shop);
+        }
+
+        return Result.ok(orderedShops);
     }
 }
